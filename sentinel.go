@@ -210,13 +210,19 @@ func (s *Sentinel) close() {
 
 func (s *Sentinel) doUntilSuccess(f func(redis.Conn) (interface{}, error)) (interface{}, error) {
 	s.mu.RLock()
+	// Sentinel的所有地址
+	// Sentinel一开始是一样的，只有在做 故障转移 的时候，才会选出一个leader
 	addrs := s.Addrs
 	s.mu.RUnlock()
 
 	var lastErr error
 
 	for _, addr := range addrs {
+		// 获取客户端和Sentinel的连接
+		// 和获取客户端与Redis的连接的逻辑一样
 		conn := s.get(addr)
+		// 使用Sentinel的连接，发从命令：SENTINEL get-master-addr-by-name
+		// 拿到Redis主库的地址
 		reply, err := f(conn)
 		conn.Close()
 		if err != nil {
@@ -226,7 +232,9 @@ func (s *Sentinel) doUntilSuccess(f func(redis.Conn) (interface{}, error)) (inte
 			s.mu.Unlock()
 			continue
 		}
+		// 放到第一位
 		s.putToTop(addr)
+		// 只要从其中一个Sentinel拿到Redis主库的地址，就返回
 		return reply, nil
 	}
 
@@ -236,6 +244,8 @@ func (s *Sentinel) doUntilSuccess(f func(redis.Conn) (interface{}, error)) (inte
 // MasterAddr returns an address of current Redis master instance.
 func (s *Sentinel) MasterAddr() (string, error) {
 	res, err := s.doUntilSuccess(func(c redis.Conn) (interface{}, error) {
+		// 使用Sentinel的连接，发从命令：SENTINEL get-master-addr-by-name
+		// 拿到Redis主库的地址
 		return queryForMaster(c, s.MasterName)
 	})
 	if err != nil {
@@ -269,6 +279,7 @@ func (s *Slave) Addr() string {
 
 // Available returns if slave is in working state at moment based on information in slave flags.
 func (s *Slave) Available() bool {
+	// s.flags 取的是Redis的数据结构中的字段的值
 	return !strings.Contains(s.flags, "disconnected") && !strings.Contains(s.flags, "s_down")
 }
 
@@ -349,8 +360,9 @@ func getRole(c redis.Conn) (string, error) {
 	}
 	return "", errors.New("redigo: can not transform ROLE reply to string")
 }
-
+// 获取Redis master的地址
 func queryForMaster(conn redis.Conn, masterName string) (string, error) {
+	// 使用Sentinel的连接，发从命令：SENTINEL get-master-addr-by-name Redis主库名称
 	res, err := redis.Strings(conn.Do("SENTINEL", "get-master-addr-by-name", masterName))
 	if err != nil {
 		return "", err
@@ -374,6 +386,7 @@ func queryForSlaveAddrs(conn redis.Conn, masterName string) ([]string, error) {
 	return slaveAddrs, nil
 }
 
+// 获取Redis slave的地址
 func queryForSlaves(conn redis.Conn, masterName string) ([]*Slave, error) {
 	res, err := redis.Values(conn.Do("SENTINEL", "slaves", masterName))
 	if err != nil {
